@@ -1,0 +1,7 @@
+set(DRIVER_INSTANCES "capture_pipeline_isp_v_proc_ss_0_vsc@20000;capture_pipeline_raspi_v_proc_ss_0_vsc@20000")
+set(DRIVER_PROP_0_LIST "xlnx,v-vscaler-1.1;0x20000;0x1;0x3;0x780;0x438;0x8;0x6;0x2;0x6;0x1")
+set(DRIVER_OPTPROP_0_LIST "")
+list(APPEND TOTAL_DRIVER_PROP_LIST DRIVER_PROP_0_LIST)
+set(DRIVER_PROP_1_LIST "xlnx,v-vscaler-1.1;0x20000;0x1;0x3;0x780;0x438;0x8;0x6;0x2;0x6;0x1")
+set(DRIVER_OPTPROP_1_LIST "")
+list(APPEND TOTAL_DRIVER_PROP_LIST DRIVER_PROP_1_LIST)

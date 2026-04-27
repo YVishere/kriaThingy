@@ -1,0 +1,4 @@
+domain_path: /home/aditya/Desktop/vitisProjects/hello_world/platform3/export/platform3/sw/standalone_psu_cortexa53_0
+app_src_dir: /home/aditya/Desktop/XilinxDesign/2025.1/Vitis/data/embeddedsw/lib/sw_apps/hello_world
+template: hello_world
+lang: c

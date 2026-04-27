@@ -1,0 +1,4 @@
+set(DRIVER_INSTANCES "capture_pipeline_raspi_mipi_csi2_rx_subsyst_0_phy@1000")
+set(DRIVER_PROP_0_LIST "xlnx,mipi-dphy-4.3;0x1000;0x0;0x1;0x2;0x32;0x6400;0x390;0x10005;0x32;0x5;0x85d9a0;0xf4240;0x0;0x91")
+set(DRIVER_OPTPROP_0_LIST "")
+list(APPEND TOTAL_DRIVER_PROP_LIST DRIVER_PROP_0_LIST)

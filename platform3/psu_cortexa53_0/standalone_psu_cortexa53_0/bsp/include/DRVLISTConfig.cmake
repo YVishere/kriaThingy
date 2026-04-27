@@ -1,0 +1,1 @@
+set(DRIVER_LIST ISPPipeline_accel;avbuf;axipmon;axis_switch;axivdma;clockps;common;coresightps_dcc;csi;csudma;ddrcpsu;dpdma;dphy;dppsu;emacps;gpio;gpiops;iic;iicps;ipipsu;mipicsiss;qspipsu;resetps;rtcpsu;scugic;sdps;spips;sysmonpsu;ttcps;uartps;usbpsu;v_csc;v_deinterlacer;v_frmbuf_wr;v_hcresampler;v_hscaler;v_letterbox;v_vcresampler;v_vscaler;video_common;vprocss;wdtps;zdma)

@@ -1,0 +1,7 @@
+set(DRIVER_INSTANCES "capture_pipeline_isp_v_proc_ss_0_reset_sel_axis@10000;capture_pipeline_raspi_v_proc_ss_0_reset_sel_axis@10000")
+set(DRIVER_PROP_0_LIST "xlnx,axi-gpio-2.0;0x10000;0x0;0x0;0xffff;0xffff;0x2")
+set(DRIVER_OPTPROP_0_LIST "")
+list(APPEND TOTAL_DRIVER_PROP_LIST DRIVER_PROP_0_LIST)
+set(DRIVER_PROP_1_LIST "xlnx,axi-gpio-2.0;0x10000;0x0;0x0;0xffff;0xffff;0x2")
+set(DRIVER_OPTPROP_1_LIST "")
+list(APPEND TOTAL_DRIVER_PROP_LIST DRIVER_PROP_1_LIST)
