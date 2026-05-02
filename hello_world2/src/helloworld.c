@@ -10,6 +10,7 @@
 #include "xil_cache.h"
 #include "xil_printf.h"
 #include "sleep.h"
+#include <xil_types.h>
 
 #define XPAR_PSU_DP_DEVICE_ID 0xFD4A0000U
 #define XPAR_PSU_DPDMA_DEVICE_ID 0xFD4C0000U
@@ -42,13 +43,11 @@ static void fill_color(uint8_t r, uint8_t g, uint8_t b)
 
     for (int i = 0; i < DISP_WIDTH * DISP_HEIGHT; i++)
         px[i] = color;
-
-    Xil_DCacheFlushRange((UINTPTR)framebuf, FB_SIZE);
 }
 
 int main(void)
 {
-    XDpPsu       dp;
+    XDpPsu       dp = {0};
     XDpDma       dpdma;
     XAVBuf       avbuf;
     XDpPsu_Config *dp_cfg;
@@ -58,7 +57,7 @@ int main(void)
 
     xil_printf("Hello================");
 
-    Xil_DCacheEnable();
+    Xil_DCacheDisable();
 
     /* ----- DisplayPort init ----- */
     dp_cfg = XDpPsu_LookupConfig(XPAR_PSU_DP_DEVICE_ID);
@@ -66,11 +65,29 @@ int main(void)
 
     status = XDpPsu_InitializeTx(&dp);
     if (status != XST_SUCCESS) {
-        xil_printf("DP init failed: %d\r\n", status);
+        xil_printf("DP HW init failed: %d\r\n", status);
         return 1;
     }
 
-    /* Set 1080p60 video timing */
+    status = XDpPsu_GetRxCapabilities(&dp);
+    if (status != XST_SUCCESS) {
+        xil_printf("No display connected (GetRxCapabilities failed: %d)\r\n", status);
+        return 1;
+    }
+
+    status = XDpPsu_CfgMainLinkMax(&dp);
+    if (status != XST_SUCCESS) {
+        xil_printf("CfgMainLinkMax failed: %d\r\n", status);
+        return 1;
+    }
+
+    status = XDpPsu_EstablishLink(&dp);
+    if (status != XST_SUCCESS) {
+        xil_printf("Link training failed: %d\r\n", status);
+        return 1;
+    }
+
+    XDpPsu_CfgMsaSetBpc(&dp, 8);
     XDpPsu_CfgMsaUseStandardVideoMode(&dp, XVIDC_VM_1920x1080_60_P);
     XDpPsu_SetVideoMode(&dp);
 
@@ -78,36 +95,45 @@ int main(void)
     dma_cfg = XDpDma_LookupConfig(XPAR_PSU_DPDMA_DEVICE_ID);
     XDpDma_CfgInitialize(&dpdma, dma_cfg);
     XDpDma_SetQOS(&dpdma, 11);
+    XDpDma_SetGraphicsFormat(&dpdma, RGBA8888);   /* sets Gfx.VideoInfo — required by Trigger */
+    XDpDma_SetChannelState(&dpdma, GraphicsChan, XDPDMA_ENABLE);
 
     /* ----- AVBuf init ----- */
     XAVBuf_CfgInitialize(&avbuf, XPAR_PSU_DP_DEVICE_ID);
-    XAVBuf_InputVideoSelect(&avbuf, XAVBUF_VIDSTREAM1_NONLIVE,
-                            XAVBUF_VIDSTREAM2_NONE);
-    XAVBuf_SetInputNonLiveVideoFormat(&avbuf, RGBA8880);
-    XAVBuf_SetOutputVideoFormat(&avbuf, RGB888);
-    XAVBuf_ConfigureVideoPipeline(&avbuf);
+    /* Use GRAPHICS stream (stream 2), not video stream 1 */
+    XAVBuf_InputVideoSelect(&avbuf, XAVBUF_VIDSTREAM1_NONE,
+                             XAVBUF_VIDSTREAM2_NONLIVE_GFX);
+    XAVBuf_SetInputNonLiveGraphicsFormat(&avbuf, RGBA8888);
+    XAVBuf_SetOutputVideoFormat(&avbuf, RGB_8BPC);
+    XAVBuf_ConfigureGraphicsPipeline(&avbuf);
     XAVBuf_ConfigureOutputVideo(&avbuf);
-
-    XAVBuf_EnableVideoBuffers(&avbuf, 1U);
+    XAVBuf_SetBlenderAlpha(&avbuf, 0, 0);             /* pixel-based alpha */
+    XAVBuf_EnableGraphicsBuffers(&avbuf, 1U);
+    XAVBuf_SetAudioVideoClkSrc(&avbuf, XAVBUF_PS_CLK, XAVBUF_PS_CLK);
+    XAVBuf_SoftReset(&avbuf);
 
     /* ----- Start DPDMA graphics channel ----- */
     fb.Address = (UINTPTR)framebuf;
     fb.Size    = FB_SIZE;
     fb.Stride  = DISP_WIDTH * BYTES_PER_PX;
+    fb.LineSize = DISP_WIDTH * BYTES_PER_PX;
+    fill_color(0, 0, 0);                          /* pre-fill black so first frame isn't garbage */
     XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);
-
+    XDpDma_SetupChannel(&dpdma, GraphicsChan);
+    XDpDma_Trigger(&dpdma, GraphicsChan);         /* actually writes to XDPDMA_GBL register */
     XDpPsu_EnableMainLink(&dp, 1U);
-
 
     while (1) {
         uint8_t r = lcg_rand8();
         uint8_t g = lcg_rand8();
         uint8_t b = lcg_rand8();
-
-        xil_printf("R=%3d G=%3d B=%3d (#%02X%02X%02X)\r\n",
-                   r, g, b, r, g, b);
+        xil_printf("R=%3d G=%3d B=%3d\r\n", r, g, b);
         fill_color(r, g, b);
-        sleep(1);
+        /* Re-setup descriptor (same buffer address, updated content) then retrigger */
+        XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);  /* sets RETRIGGER_EN flag */
+        XDpDma_SetupChannel(&dpdma, GraphicsChan);  /* re-inits descriptor */
+        XDpDma_ReTrigger(&dpdma, GraphicsChan);     /* writes hardware trigger */
+        //usleep(1000000);  /* 1s delay — use usleep instead of sleep */
     }
 
     return 0;
