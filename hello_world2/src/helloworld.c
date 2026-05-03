@@ -11,6 +11,7 @@
 #include "xil_printf.h"
 #include "sleep.h"
 #include <xil_types.h>
+#include "xdppsu_hw.h"
 
 #define XPAR_PSU_DP_DEVICE_ID 0xFD4A0000U
 #define XPAR_PSU_DPDMA_DEVICE_ID 0xFD4C0000U
@@ -54,45 +55,84 @@ int main(void)
     XDpDma_Config *dma_cfg;
     XDpDma_FrameBuffer fb;
     int status;
-
-    xil_printf("Hello================");
+    sleep(3);
+    xil_printf("\r\n=== DP Hardware Detection ===\r\n");
 
     Xil_DCacheDisable();
 
     /* ----- DisplayPort init ----- */
     dp_cfg = XDpPsu_LookupConfig(XPAR_PSU_DP_DEVICE_ID);
+    if (dp_cfg == NULL) {
+        xil_printf("[FAIL] XDpPsu_LookupConfig returned NULL for 0x%08X\r\n",
+                   XPAR_PSU_DP_DEVICE_ID);
+        return 1;
+    }
+    xil_printf("[OK]   DP config found: BaseAddr=0x%08X\r\n", dp_cfg->BaseAddr);
+
     XDpPsu_CfgInitialize(&dp, dp_cfg, dp_cfg->BaseAddr);
+    xil_printf("[OK]   XDpPsu_CfgInitialize done\r\n");
 
     status = XDpPsu_InitializeTx(&dp);
-    if (status != XST_SUCCESS) {
-        xil_printf("DP HW init failed: %d\r\n", status);
-        return 1;
+    xil_printf("[%s]   XDpPsu_InitializeTx: status=%d\r\n",
+               status == XST_SUCCESS ? "OK  " : "WARN", status);
+
+    /* Read HPD (Hot-Plug-Detect) raw signal from hardware register */
+    {
+        u32 hpd = XDpPsu_ReadReg(dp.Config.BaseAddr, XDPPSU_INTERRUPT_SIG_STATE);
+        xil_printf("[INF]  HPD register=0x%08X  ->  display %s\r\n", hpd,
+                   (hpd & XDPPSU_INTERRUPT_SIG_STATE_HPD_STATE_MASK)
+                   ? "CONNECTED" : "NOT CONNECTED");
     }
 
     status = XDpPsu_GetRxCapabilities(&dp);
     if (status != XST_SUCCESS) {
-        xil_printf("No display connected (GetRxCapabilities failed: %d)\r\n", status);
+        xil_printf("[FAIL] GetRxCapabilities: %d  (no monitor or bad cable)\r\n", status);
         return 1;
     }
+    xil_printf("[OK]   DPCD raw caps (bytes 0x00-0x0F):\r\n       ");
+    for (int i = 0; i < 16; i++)
+        xil_printf("%02X ", dp.RxConfig.DpcdRxCapsField[i]);
+    xil_printf("\r\n");
+    xil_printf("       [0]=DPrev [1]=MaxRate(06=1.62G/0A=2.7G/14=5.4G) [2]=MaxLanes\r\n");
 
     status = XDpPsu_CfgMainLinkMax(&dp);
-    if (status != XST_SUCCESS) {
-        xil_printf("CfgMainLinkMax failed: %d\r\n", status);
-        return 1;
+    {
+        const char *rate_str =
+            (dp.LinkConfig.MaxLinkRate == 0x14) ? "5.4 Gbps HBR2" :
+            (dp.LinkConfig.MaxLinkRate == 0x0A) ? "2.7 Gbps HBR"  :
+            (dp.LinkConfig.MaxLinkRate == 0x06) ? "1.62 Gbps RBR" : "unknown";
+        xil_printf("[%s]   CfgMainLinkMax: status=%d\r\n",
+                   status == XST_SUCCESS ? "OK  " : "WARN", status);
+        xil_printf("       MaxRate=0x%02X (%s)  MaxLanes=%d\r\n",
+                   dp.LinkConfig.MaxLinkRate, rate_str, (int)dp.LinkConfig.MaxLaneCount);
+        xil_printf("       ActiveRate=0x%02X  ActiveLanes=%d\r\n",
+                   dp.LinkConfig.LinkRate, (int)dp.LinkConfig.LaneCount);
     }
 
     status = XDpPsu_EstablishLink(&dp);
-    if (status != XST_SUCCESS) {
-        xil_printf("Link training failed: %d\r\n", status);
-        return 1;
+    {
+        u32 phy = XDpPsu_ReadReg(dp.Config.BaseAddr, XDPPSU_PHY_STATUS);
+        xil_printf("[%s]   EstablishLink: status=%d  PHY_STATUS=0x%08X\r\n",
+                   status == XST_SUCCESS ? "OK  " : "FAIL", status, phy);
+        if (status != XST_SUCCESS) {
+            xil_printf("[FAIL] Link training failed — halting\r\n");
+            return 1;
+        }
     }
 
     XDpPsu_CfgMsaSetBpc(&dp, 8);
     XDpPsu_CfgMsaUseStandardVideoMode(&dp, XVIDC_VM_1920x1080_60_P);
     XDpPsu_SetVideoMode(&dp);
+    xil_printf("[OK]   MSA: %dx%d @ %dHz  BPC=%d  PixClk=%dHz\r\n",
+               (int)dp.MsaConfig.Vtm.Timing.HActive,
+               (int)dp.MsaConfig.Vtm.Timing.VActive,
+               (int)dp.MsaConfig.Vtm.FrameRate,
+               (int)dp.MsaConfig.BitsPerColor,
+               (int)dp.MsaConfig.PixelClockHz);
 
     /* ----- DPDMA init ----- */
     dma_cfg = XDpDma_LookupConfig(XPAR_PSU_DPDMA_DEVICE_ID);
+    xil_printf("[OK]   DPDMA config: BaseAddr=0x%08X\r\n", dma_cfg->BaseAddr);
     XDpDma_CfgInitialize(&dpdma, dma_cfg);
     XDpDma_SetQOS(&dpdma, 11);
     XDpDma_SetGraphicsFormat(&dpdma, RGBA8888);   /* sets Gfx.VideoInfo — required by Trigger */
@@ -111,6 +151,7 @@ int main(void)
     XAVBuf_EnableGraphicsBuffers(&avbuf, 1U);
     XAVBuf_SetAudioVideoClkSrc(&avbuf, XAVBUF_PS_CLK, XAVBUF_PS_CLK);
     XAVBuf_SoftReset(&avbuf);
+    xil_printf("[OK]   AVBuf: graphics pipeline configured (RGBA8888 -> RGB_8BPC)\r\n");
 
     /* ----- Start DPDMA graphics channel ----- */
     fb.Address = (UINTPTR)framebuf;
@@ -122,19 +163,22 @@ int main(void)
     XDpDma_SetupChannel(&dpdma, GraphicsChan);
     XDpDma_Trigger(&dpdma, GraphicsChan);         /* actually writes to XDPDMA_GBL register */
     XDpPsu_EnableMainLink(&dp, 1U);
+    xil_printf("[OK]   DMA triggered: FB=0x%08X  size=%d  stride=%d\r\n",
+               (unsigned int)fb.Address, (int)fb.Size, (int)fb.Stride);
+    xil_printf("=== Init complete — starting color loop ===\r\n");
 
-    while (1) {
-        uint8_t r = lcg_rand8();
-        uint8_t g = lcg_rand8();
-        uint8_t b = lcg_rand8();
-        xil_printf("R=%3d G=%3d B=%3d\r\n", r, g, b);
-        fill_color(r, g, b);
-        /* Re-setup descriptor (same buffer address, updated content) then retrigger */
-        XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);  /* sets RETRIGGER_EN flag */
-        XDpDma_SetupChannel(&dpdma, GraphicsChan);  /* re-inits descriptor */
-        XDpDma_ReTrigger(&dpdma, GraphicsChan);     /* writes hardware trigger */
-        //usleep(1000000);  /* 1s delay — use usleep instead of sleep */
-    }
+    // while (1) {
+    //     uint8_t r = lcg_rand8();
+    //     uint8_t g = lcg_rand8();
+    //     uint8_t b = lcg_rand8();
+    //     xil_printf("R=%3d G=%3d B=%3d\r\n", r, g, b);
+    //     fill_color(r, g, b);
+    //     /* Re-setup descriptor (same buffer address, updated content) then retrigger */
+    //     XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);  /* sets RETRIGGER_EN flag */
+    //     XDpDma_SetupChannel(&dpdma, GraphicsChan);  /* re-inits descriptor */
+    //     XDpDma_ReTrigger(&dpdma, GraphicsChan);     /* writes hardware trigger */
+    //     //usleep(500000);
+    // }
 
     return 0;
 }
