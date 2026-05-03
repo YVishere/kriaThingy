@@ -184,14 +184,15 @@ int main(void)
     XDpDma_SetupChannel(&dpdma, GraphicsChan);
     XDpDma_Trigger(&dpdma, GraphicsChan);         /* actually writes to XDPDMA_GBL register */
     XDpPsu_EnableMainLink(&dp, 1U);
-    /* EDID read via I2C-over-AUX */
-    xil_printf("[DBG]  Attempting EDID read via I2C-over-AUX...\r\n");
-    status = XDpPsu_GetEdid(&dp, edid);
-    xil_printf("[DBG]  EDID status=%d (0=success, 2=timeout/no_device)\r\n", status);
-    if (status == XST_SUCCESS) {
-        xil_printf("[DBG]  EDID header: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-                edid[0], edid[1], edid[2], edid[3], 
-                edid[4], edid[5], edid[6], edid[7]);
+/* EDID read via I2C-over-AUX */
+xil_printf("[DBG]  Attempting EDID read via I2C-over-AUX...\r\n");
+status = XDpPsu_GetEdid(&dp, edid);
+xil_printf("[DBG]  EDID status=%d (0=success, 2=timeout/no_device)\r\n", status);
+if (status == XST_SUCCESS) {
+    xil_printf("[DBG]  EDID header: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+               edid[0], edid[1], edid[2], edid[3], 
+               edid[4], edid[5], edid[6], edid[7]);
+    }
     xil_printf("[OK]   DMA triggered: FB=0x%08X  size=%d  stride=%d\r\n",
                (unsigned int)fb.Address, (int)fb.Size, (int)fb.Stride);
     xil_printf("=== Init complete — starting color loop ===\r\n");
