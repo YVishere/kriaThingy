@@ -82,6 +82,10 @@ int main(void)
         xil_printf("[INF]  HPD register=0x%08X  ->  display %s\r\n", hpd,
                    (hpd & XDPPSU_INTERRUPT_SIG_STATE_HPD_STATE_MASK)
                    ? "CONNECTED" : "NOT CONNECTED");
+        
+        if (hpd & XDPPSU_INTERRUPT_SIG_STATE_HPD_STATE_MASK) {
+            msleep(100);  // Wait 100ms for monitor to stabilize
+        }
     }
 
     status = XDpPsu_GetRxCapabilities(&dp);
@@ -120,8 +124,25 @@ int main(void)
         }
     }
 
-    XDpPsu_CfgMsaSetBpc(&dp, 8);
-    XDpPsu_CfgMsaUseStandardVideoMode(&dp, XVIDC_VM_1920x1080_60_P);
+    u8 edid[128];
+    int retry;
+    for (retry = 0; retry < 3; retry++) {
+        status = XDpPsu_GetEdid(&dp, edid);
+        if (status == XST_SUCCESS) {
+            xil_printf("[OK]   EDID read successful on attempt %d\r\n", retry + 1);
+            break;
+        }
+        usleep(50000);  // Wait 50ms between retries
+    }
+
+    if (status == XST_SUCCESS) {
+        XDpPsu_CfgMsaUseEdidPreferredTiming(&dp, edid);
+        XDpPsu_CfgMsaSetBpc(&dp, 8);
+    } else {
+        xil_printf("[WARN] EDID read failed after %d attempts, using fallback\r\n", retry);
+        XDpPsu_CfgMsaSetBpc(&dp, 8);
+        XDpPsu_CfgMsaUseStandardVideoMode(&dp, XVIDC_VM_1920x1080_60_P);
+    }
     XDpPsu_SetVideoMode(&dp);
     xil_printf("[OK]   MSA: %dx%d @ %dHz  BPC=%d  PixClk=%dHz\r\n",
                (int)dp.MsaConfig.Vtm.Timing.HActive,
@@ -163,22 +184,30 @@ int main(void)
     XDpDma_SetupChannel(&dpdma, GraphicsChan);
     XDpDma_Trigger(&dpdma, GraphicsChan);         /* actually writes to XDPDMA_GBL register */
     XDpPsu_EnableMainLink(&dp, 1U);
+    /* EDID read via I2C-over-AUX */
+    xil_printf("[DBG]  Attempting EDID read via I2C-over-AUX...\r\n");
+    status = XDpPsu_GetEdid(&dp, edid);
+    xil_printf("[DBG]  EDID status=%d (0=success, 2=timeout/no_device)\r\n", status);
+    if (status == XST_SUCCESS) {
+        xil_printf("[DBG]  EDID header: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                edid[0], edid[1], edid[2], edid[3], 
+                edid[4], edid[5], edid[6], edid[7]);
     xil_printf("[OK]   DMA triggered: FB=0x%08X  size=%d  stride=%d\r\n",
                (unsigned int)fb.Address, (int)fb.Size, (int)fb.Stride);
     xil_printf("=== Init complete — starting color loop ===\r\n");
 
-    // while (1) {
-    //     uint8_t r = lcg_rand8();
-    //     uint8_t g = lcg_rand8();
-    //     uint8_t b = lcg_rand8();
-    //     xil_printf("R=%3d G=%3d B=%3d\r\n", r, g, b);
-    //     fill_color(r, g, b);
-    //     /* Re-setup descriptor (same buffer address, updated content) then retrigger */
-    //     XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);  /* sets RETRIGGER_EN flag */
-    //     XDpDma_SetupChannel(&dpdma, GraphicsChan);  /* re-inits descriptor */
-    //     XDpDma_ReTrigger(&dpdma, GraphicsChan);     /* writes hardware trigger */
-    //     //usleep(500000);
-    // }
+    while (1) {
+        uint8_t r = lcg_rand8();
+        uint8_t g = lcg_rand8();
+        uint8_t b = lcg_rand8();
+        xil_printf("R=%3d G=%3d B=%3d\r\n", r, g, b);
+        fill_color(r, g, b);
+        /* Re-setup descriptor (same buffer address, updated content) then retrigger */
+        XDpDma_DisplayGfxFrameBuffer(&dpdma, &fb);  /* sets RETRIGGER_EN flag */
+        XDpDma_SetupChannel(&dpdma, GraphicsChan);  /* re-inits descriptor */
+        XDpDma_ReTrigger(&dpdma, GraphicsChan);     /* writes hardware trigger */
+        sleep(2);
+    }
 
     return 0;
 }
