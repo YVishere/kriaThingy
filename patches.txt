@@ -1,0 +1,336 @@
+Kria PCAM 2021.1 -> Vitis 2025.1 Port: Applied Patches
+========================================================
+All changes are confined to vitisProj/app_component/src/
+
+
+------------------------------------------------------------------------
+FILE: lscript.ld
+------------------------------------------------------------------------
+
+CHANGE: EL1 stack size increased from 2048 bytes to 16 KB (0x4000)
+
+  Before:
+    _EL1_STACK_SIZE = DEFINED(_EL1_STACK_SIZE) ? _EL1_STACK_SIZE : 2048;
+
+  After:
+    _EL1_STACK_SIZE = DEFINED(_EL1_STACK_SIZE) ? _EL1_STACK_SIZE : 0x4000;
+
+  Reason:
+    The HPD interrupt handler runs at EL1. It calls DpPsu_Run() which in
+    turn calls DpPsu_Hpd_Train() and DpPsu_SetupVideoStream(). These two
+    functions together require far more than 2 KB of stack. The stack
+    overflow was silently corrupting memory, then causing a fault on the
+    next ISR entry (visible as a debugger stop at address 0x280, which is
+    the AArch64 EL1h IRQ exception vector).
+
+
+------------------------------------------------------------------------
+FILE: xdpdma_video_example.c
+------------------------------------------------------------------------
+
+CHANGE 1: BUFFERSIZE and LINESIZE corrected for RGBA8888 (4 bytes/pixel)
+
+  Before:
+    #define BUFFERSIZE  1280 * 720 * 3
+    #define LINESIZE    1280 * 3
+
+  After:
+    #define BUFFERSIZE  1280 * 720 * 4
+    #define LINESIZE    1280 * 4
+
+  Reason:
+    The DPDMA graphics layer was configured for RGBA8888 format which is
+    4 bytes per pixel, not 3. Undersizing the buffer caused the DPDMA to
+    read beyond the allocated region.
+
+---
+
+CHANGE 2: Video pipeline configured for non-live graphics (no camera)
+
+  Before:
+    XAVBuf_EnableGraphicsBuffers(RunCfgPtr->AVBufPtr, 1);
+    XAVBuf_InputVideoSelect(AVBufPtr, XAVBUF_VIDSTREAM1_LIVE,
+                            XAVBUF_VIDSTREAM2_NONLIVE_GFX);
+    XAVBuf_ConfigureVideoMixerAlpha(AVBufPtr, 1, 0xFFFF);
+    XAVBuf_SetInputVideoFormat(AVBufPtr, ...);
+
+  After:
+    XAVBuf_EnableGraphicsBuffers(RunCfgPtr->AVBufPtr, 1);
+    XAVBuf_SetOutputVideoFormat(AVBufPtr, RGB_8BPC);
+    XAVBuf_InputVideoSelect(AVBufPtr, XAVBUF_VIDSTREAM1_NONE,
+                            XAVBUF_VIDSTREAM2_NONLIVE_GFX);
+    XAVBuf_ConfigureGraphicsPipeline(AVBufPtr);
+
+  Reason:
+    The current Vivado design has no MIPI camera pipeline. VIDSTREAM1_LIVE
+    requires a live video source; selecting it with no source stalls the
+    AVBuf and prevents any output. VIDSTREAM1_NONE with NONLIVE_GFX routes
+    only the DPDMA graphics layer to the display.
+
+---
+
+CHANGE 3: Pixel clock source changed from PL to PS
+
+  Before:
+    XAVBuf_SetAudioVideoClkSrc(AVBufPtr, XAVBUF_PL_CLK, XAVBUF_PS_CLK);
+
+  After:
+    XAVBuf_SetAudioVideoClkSrc(AVBufPtr, XAVBUF_PS_CLK, XAVBUF_PS_CLK);
+
+  Reason:
+    The current Vivado design does not export a PL pixel clock. Using
+    XAVBUF_PL_CLK with no clock source prevents the display from generating
+    valid timing.
+
+---
+
+CHANGE 4: SetupInterrupts() moved to last call in DpdmaVideoExample()
+
+  Before:
+    SetupInterrupts(RunCfgPtr);
+    GraphicsOverlay(Frame, RunCfgPtr);
+    FrameBuffer.Address = ...;
+    ...
+
+  After:
+    GraphicsOverlay(Frame, RunCfgPtr);
+    FrameBuffer.Address = ...;
+    FrameBuffer.Stride  = STRIDE;
+    FrameBuffer.LineSize = LINESIZE;
+    FrameBuffer.Size    = BUFFERSIZE;
+    SetupInterrupts(RunCfgPtr);   /* must be last */
+
+  Reason:
+    SetupInterrupts() enables the HPD interrupt. If the monitor is already
+    connected, an HPD event fires immediately and DpPsu_Run() calls
+    XDpDma_DisplayGfxFrameBuffer() before FrameBuffer has been populated,
+    causing the DPDMA to DMA from address 0x0 (vector table).
+
+---
+
+CHANGE 5: GraphicsOverlay alpha values set to fully opaque (0xFF)
+
+  Before:
+    RGBA[Index] = 0x0F0000FF;   /* top half:    alpha = 0x0F (~6%)  */
+    RGBA[Index] = 0xF000FF00;   /* bottom half: alpha = 0xF0 (~94%) */
+
+  After:
+    RGBA[Index] = 0xFF0000FF;   /* top half:    red,   alpha = 0xFF */
+    RGBA[Index] = 0xFF00FF00;   /* bottom half: green, alpha = 0xFF */
+
+  Reason:
+    The original design had a live camera stream underneath the graphics
+    overlay. With no live stream the background is black, so the top-half
+    alpha of 0x0F made the red channel invisible, leaving only a green
+    bottom half visible on screen.
+
+---
+
+CHANGE 6: Color cycling loop writes to DPDMA Frame buffer with correct
+          RGBA8888 colors
+
+  Before:
+    const u32 colors[] = {0xFF0000, 0x00FF00, ...};  /* 24-bit RGB, A=0 */
+    for (int p = 0; p < DEMO_MAX_FRAME; p++) frameBuf[0][p] = colors[idx];
+
+  After:
+    extern u8 Frame[];   /* added at file scope */
+    const u32 colors[] = {0xFF0000FF, 0xFF00FF00, ...};  /* RGBA8888 */
+    u32 *fb = (u32 *)Frame;
+    for (int p = 0; p < DEMO_MAX_FRAME; p++) fb[p] = colors[idx];
+
+  Reason:
+    The loop was writing into frameBuf[] which is the VDMA camera buffer
+    (never started in COLOR_TEST_ONLY mode). The display is driven by the
+    DPDMA overlay buffer Frame[]. Additionally the old color constants had
+    alpha = 0x00 (fully transparent) which would have been invisible even
+    if the correct buffer had been targeted.
+
+    RGBA8888 pixel encoding (little-endian u32 = 0xAABBGGRR):
+      Red     0xFF0000FF    Cyan    0xFFFFFF00
+      Green   0xFF00FF00    Magenta 0xFFFF00FF
+      Blue    0xFFFF0000    Yellow  0xFF00FFFF
+      White   0xFFFFFFFF
+
+
+------------------------------------------------------------------------
+FILE: xdppsu_interrupt.c
+------------------------------------------------------------------------
+
+CHANGE 1: extern FrameBuffer declaration added
+
+  Added at file scope:
+    #include "xdpdma_video_example.h"
+    extern XDpDma_FrameBuffer FrameBuffer;
+
+  Reason:
+    DpPsu_Run() needs to call XDpDma_DisplayGfxFrameBuffer() with the
+    FrameBuffer struct that is populated in DpdmaVideoExample(). Without
+    the extern the ISR file had no access to it.
+
+---
+
+CHANGE 2: InitDpDmaSubsystem() removed from DpPsu_Run()
+
+  Before:
+    void DpPsu_Run(Run_Config *RunCfgPtr) {
+        InitDpDmaSubsystem(RunCfgPtr);   /* <-- called from ISR */
+        XDpPsu_EnableMainLink(...);
+        ...
+
+  After:
+    void DpPsu_Run(Run_Config *RunCfgPtr) {
+        XDpPsu_EnableMainLink(...);      /* InitDpDmaSubsystem removed */
+        ...
+
+  Reason:
+    InitDpDmaSubsystem() allocates ~3 KB of stack. Calling it from the
+    HPD ISR (which runs on the EL1 stack, formerly 2 KB) caused an
+    immediate stack overflow. InitDpDmaSubsystem() is now called only
+    from DpdmaVideoExample() in main-thread context where the full EL3
+    stack (0x8000) is available.
+
+---
+
+CHANGE 3: XDpDma_DisplayGfxFrameBuffer() added to DpPsu_Run()
+
+  Added after successful link training:
+    XDpDma_DisplayGfxFrameBuffer(RunCfgPtr->DpDmaPtr, &FrameBuffer);
+    DpPsu_SetupVideoStream(RunCfgPtr);
+    XDpPsu_EnableMainLink(DpPsuPtr, 1);
+
+  Reason:
+    The DPDMA must be told to start fetching the frame buffer before the
+    main link is enabled. Without this call the DisplayPort output carried
+    valid link timing but no pixel data, producing a black screen.
+
+
+------------------------------------------------------------------------
+FILE: helloworld.c
+------------------------------------------------------------------------
+
+CHANGE 1: VTC init and setup guarded with #ifndef COLOR_TEST_ONLY
+
+  Wrapped in #ifndef COLOR_TEST_ONLY ... #endif:
+    - XVtc_LookupConfig() / XVtc_CfgInitialize()
+    - Full VTC timing configuration and XVtc_Enable()
+
+  Reason:
+    The current Vivado design has no Video Timing Controller (VTC) IP.
+    XVtc_CfgInitialize() performs a hardware register read; accessing an
+    unmapped AXI address on ZynqMP without AXI timeout configured causes
+    the CPU to hang indefinitely. In COLOR_TEST_ONLY mode no VTC is
+    needed.
+
+---
+
+CHANGE 2: All VDMA code collapsed into a single #ifndef COLOR_TEST_ONLY
+          block
+
+  Moved inside #ifndef COLOR_TEST_ONLY ... #endif:
+    - pFrames[] setup
+    - XAxiVdma_LookupConfig() / XAxiVdma_CfgInitialize()
+    - vdmaDMA struct configuration
+    - XAxiVdma_DmaConfig() / XAxiVdma_DmaSetBufferAddr() (READ and WRITE)
+    - XV_demosaic / XV_gamma_lut initialisation
+    - XAxiVdma_DmaStart() / XAxiVdma_StartParking() (READ and WRITE)
+
+  Reason:
+    XAxiVdma_DmaStart() waits for the VDMA to receive a vsync pulse from
+    the VTC. With no VTC clock running the function polls forever, hanging
+    the CPU before run_dppsu() is ever called. This was the root cause of
+    the "stuck at Hello World" symptom in free-run mode. In COLOR_TEST_ONLY
+    mode none of the camera/VDMA pipeline is used.
+
+---
+
+CHANGE 3: COLOR_TEST_ONLY loop uses double buffering to eliminate tearing
+
+  Before:
+    u32 *fb = (u32 *)Frame;
+    int idx = 0;
+    while(1) {
+        xil_printf("Display color: %s\n\r", names[idx]);
+        for (int p = 0; p < DEMO_MAX_FRAME; p++) fb[p] = colors[idx];
+        idx = (idx + 1) % 7;
+        usleep(2000000);
+    }
+
+  After:
+    extern u8 Frame2[];
+    u32 *bufs[2] = { (u32 *)Frame, (u32 *)Frame2 };
+    int back = 1;
+    int idx = 0;
+    while(1) {
+        xil_printf("Display color: %s\n\r", names[idx]);
+        u32 *bb = bufs[back];
+        for (int p = 0; p < DEMO_MAX_FRAME; p++) bb[p] = colors[idx];
+        flip_frame_buffer((u8 *)bb);
+        back ^= 1;
+        idx = (idx + 1) % 7;
+        usleep(2000000);
+    }
+
+  Reason:
+    With a single buffer the CPU fills Frame[] top-to-bottom while the
+    DPDMA simultaneously scans the same buffer top-to-bottom at 60 Hz.
+    This produces a visible horizontal tear: the upper rows show the old
+    colour (already scanned before the CPU reached them) while the lower
+    rows show the new colour, creating a wipe effect moving down the screen
+    each time the colour changes.
+
+    Double buffering keeps one buffer live on the DPDMA (front buffer)
+    while the CPU writes into the other (back buffer). Once the back buffer
+    is fully written, flip_frame_buffer() schedules the swap. The Zynq
+    UltraScale+ DPDMA hardware latches the new descriptor address at the
+    next vsync boundary, so the display never reads a partially-written
+    buffer and no tearing occurs.
+
+
+------------------------------------------------------------------------
+FILE: xdpdma_video_example.c  (continued)
+------------------------------------------------------------------------
+
+CHANGE 7: Second frame buffer Frame2[] added for double buffering
+
+  Added alongside Frame[]:
+    u8 Frame2[BUFFERSIZE] __attribute__((__aligned__(256)));
+
+  Reason:
+    The double-buffer scheme (helloworld.c CHANGE 3) requires a second
+    256-byte aligned buffer of the same size as Frame[]. Frame2[] is the
+    back buffer the CPU writes into while Frame[] is displayed, and vice
+    versa on each flip.
+
+---
+
+CHANGE 8: flip_frame_buffer() helper added
+
+  Added new function:
+    void flip_frame_buffer(u8 *new_frame) {
+        FrameBuffer.Address = (INTPTR)new_frame;
+        XDpDma_DisplayGfxFrameBuffer(RunCfg.DpDmaPtr, &FrameBuffer);
+    }
+
+  Reason:
+    Encapsulates the two steps needed to present a new frame: update the
+    FrameBuffer descriptor address then re-arm the DPDMA. The DPDMA
+    hardware picks up the new address at the next vsync edge, giving a
+    tear-free atomic buffer swap.
+
+
+------------------------------------------------------------------------
+FILE: xdpdma_video_example.h
+------------------------------------------------------------------------
+
+CHANGE 1: Frame2 and flip_frame_buffer() declared
+
+  Added:
+    extern u8 Frame2[];
+    void flip_frame_buffer(u8 *new_frame);
+
+  Reason:
+    helloworld.c needs access to Frame2[] (the back buffer) and
+    flip_frame_buffer() to perform the vsync-aligned swap. The extern
+    declaration makes Frame2 reachable across translation units without
+    duplicating the definition.

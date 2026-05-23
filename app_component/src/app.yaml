@@ -1,0 +1,4 @@
+domain_path: /home/aditya/Desktop/vitisProjects/Kria_display_stream/kria/export/kria/sw/standalone_psu_cortexa53_0
+app_src_dir: /home/aditya/Desktop/XilinxDesign/2025.1/Vitis/data/embeddedsw/lib/sw_apps/empty_application
+template: empty_application
+lang: c
