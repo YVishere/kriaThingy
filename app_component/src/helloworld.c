@@ -19,7 +19,7 @@
 #include "math.h"
 
 /* Define COLOR_TEST_ONLY to bypass camera init and cycle solid colors on the display */
-#define COLOR_TEST_ONLY
+#undef COLOR_TEST_ONLY
 
 XIicPs  iic_cam;
 XGpioPs gp_cam;
@@ -39,13 +39,13 @@ extern u8 Frame[];
 #define DEMO_STRIDE (1280*3)
 #define DISPLAY_NUM_FRAMES 1
 #define cam_gpio XPAR_XGPIOPS_0_DEVICE_ID
-#define IIC_cam 			XPAR_XIICPS_0_DEVICE_ID
+#define IIC_cam 				XPAR_XIICPS_0_BASEADDR
 #define CAM_ID              0x78
 #define IIC_CAM_ADDR  		0x3c
 #define IIC_SCLK_RATE		100000
 #define SW_IIC_ADDR         0x74//0x75
 
-void detect_camera();
+int  detect_camera();
 int  Initial_setting_1 ( u32 *cfg_init , int cfg_init_QTY  );
 void gamma_calc(float gamma_val);
 
@@ -61,7 +61,6 @@ int main()
 	XVtc_Timing vtcTiming;
 	XVtc_SourceSelect SourceSelect;
 	VideoMode video;
-	XGpioPs_Config *GPIO_Config;
 	XIicPs_Config *iic_conf;
 
 	int Status;
@@ -115,8 +114,8 @@ int main()
 
 	usleep(1000000);
 
-	Initial_setting_1 ( cfg_init , 63  );
-	Initial_setting_1 ( cfg_720p_60fps , 38  );
+	Initial_setting_1 ( (u32 *)cfg_init , 63  );
+	Initial_setting_1 ( (u32 *)cfg_720p_60fps , 38  );
 	xil_printf("Configuration Complete\n\r");
 #endif
 
@@ -191,7 +190,7 @@ int main()
 	vdmaDMA.VertSizeInput = video.height;
 	vdmaDMA.HoriSizeInput = (video.width)*3;
 	vdmaDMA.FixedFrameStoreAddr = 0;
-	vdmaDMA.FrameStoreStartAddr[0] = (u32)  pFrames[0];
+	vdmaDMA.FrameStoreStartAddr[0] = (UINTPTR) pFrames[0];
 	vdmaDMA.Stride = (video.width)*3;
 
 	XAxiVdma_DmaConfig(&vdma, XAXIVDMA_WRITE, &(vdmaDMA));
@@ -200,7 +199,7 @@ int main()
 	XAxiVdma_DmaSetBufferAddr(&vdma, XAXIVDMA_READ,vdmaDMA.FrameStoreStartAddr);
 	xil_printf("frame addr %x\n\r",vdmaDMA.FrameStoreStartAddr[0]);
 
-	XV_demosaic_Initialize(&cfa, XPAR_V_DEMOSAIC_0_DEVICE_ID);
+	XV_demosaic_Initialize(&cfa, XPAR_V_DEMOSAIC_0_BASEADDR);
 	XV_demosaic_Set_HwReg_width(&cfa, video.width);
 	XV_demosaic_Set_HwReg_height(&cfa, video.height);
 	XV_demosaic_Set_HwReg_bayer_phase(&cfa, 0x03);
@@ -208,13 +207,13 @@ int main()
 	XV_demosaic_Start(&cfa);
 
 	gamma_calc(1.2);
-	XV_gamma_lut_Initialize(&gamma_inst, XPAR_V_GAMMA_LUT_0_DEVICE_ID);
+	XV_gamma_lut_Initialize(&gamma_inst, XPAR_V_GAMMA_LUT_0_BASEADDR);
 	XV_gamma_lut_Set_HwReg_width(&gamma_inst, video.width);
 	XV_gamma_lut_Set_HwReg_height(&gamma_inst, video.height);
 	XV_gamma_lut_Set_HwReg_video_format(&gamma_inst, 0x00);
-	XV_gamma_lut_Write_HwReg_gamma_lut_0_Bytes(&gamma_inst, 0,(int *) gamma_reg, 512);
-	XV_gamma_lut_Write_HwReg_gamma_lut_1_Bytes(&gamma_inst, 0,(int *) gamma_reg, 512);
-	XV_gamma_lut_Write_HwReg_gamma_lut_2_Bytes(&gamma_inst, 0,(int *) gamma_reg, 512);
+	XV_gamma_lut_Write_HwReg_gamma_lut_0_Bytes(&gamma_inst, 0,(char *) gamma_reg, 512);
+	XV_gamma_lut_Write_HwReg_gamma_lut_1_Bytes(&gamma_inst, 0,(char *) gamma_reg, 512);
+	XV_gamma_lut_Write_HwReg_gamma_lut_2_Bytes(&gamma_inst, 0,(char *) gamma_reg, 512);
 	XV_gamma_lut_Start(&gamma_inst);
 	XV_gamma_lut_EnableAutoRestart(&gamma_inst);
 
@@ -235,9 +234,9 @@ int main()
 
 	usleep(1000000);
 
-	Initial_setting_1 ( cfg_init , 63  );
-	Initial_setting_1 ( cfg_simple_awb, 19  );
-	Initial_setting_1 ( cfg_720p_60fps , 38  );
+	Initial_setting_1 ( (u32 *)cfg_init , 63  );
+	Initial_setting_1 ( (u32 *)cfg_simple_awb, 19  );
+	Initial_setting_1 ( (u32 *)cfg_720p_60fps , 38  );
 	xil_printf("Configuration Complete\n\r");
 
 	Status = XAxiVdma_DmaStart(&vdma, XAXIVDMA_WRITE);
@@ -290,7 +289,7 @@ int main()
 
 
 
-void detect_camera()
+int detect_camera()
 {
 
 	u32 Status;
@@ -316,11 +315,12 @@ void detect_camera()
 	else{
 		print("Camera detected \n\r");
 	}
+	return XST_SUCCESS;
 }
 
 int  Initial_setting_1 ( u32 *cfg_init , int cfg_init_QTY  )
 {
-	s32  Status , byte_count;
+	s32  Status;
 
     int i ;
 

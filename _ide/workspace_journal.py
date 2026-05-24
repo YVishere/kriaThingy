@@ -43,3 +43,7 @@ client.delete_component(name="app")
 comp = client.get_component(name="app_component")
 comp.build()
 
+comp.build()
+
+comp.build()
+
